@@ -1,0 +1,87 @@
+"""
+Centralized configuration for the Mandera Analytics pipeline.
+All modules import from here — no hardcoded connection strings.
+"""
+
+import os
+from datetime import datetime, timezone
+
+# — MongoDB Atlas —
+MONGO_URI = os.getenv("MONGO_URI")
+if not MONGO_URI:
+    raise EnvironmentError(
+        "MONGO_URI is not set. Provide your MongoDB Atlas connection string in .env"
+    )
+
+MONGO_DB = os.getenv("MONGO_DB_NAME")
+
+MONGO_COLLECTIONS = {
+    "customers": "customers",
+    "products": "products",
+    "orders": "orders",
+}
+
+# — Source generation settings (used by generator/) —
+ORDERS_MIN = 2000
+ORDERS_MAX = 5000
+CUSTOMERS_MIN = 10
+CUSTOMERS_MAX = 20
+PRODUCTS_MIN = 5
+PRODUCTS_MAX = 10
+
+REGIONS = ["Mandera East", "Mandera West", "Mandera Central"]
+PAYMENT_STATUSES = ["paid", "failed", "pending"]
+
+# — Product categories —
+PRODUCT_CATEGORIES = {
+    "Electronics": [
+        "Wireless Earbuds", "Power Bank", "USB-C Hub", "Bluetooth Speaker",
+        "Smart Watch", "Laptop Stand", "Webcam", "Portable SSD",
+        "Phone Case", "Screen Protector",
+    ],
+    "Groceries": [
+        "Rice 5kg", "Cooking Oil 3L", "Sugar 2kg", "Maize Flour 2kg",
+        "Tea Leaves 500g", "Milk Powder 900g", "Salt 1kg",
+        "Wheat Flour 2kg", "Pasta 500g", "Tomato Paste",
+    ],
+    "Clothing": [
+        "Cotton T-Shirt", "Denim Jeans", "Polo Shirt", "Hoodie",
+        "Khaki Trousers", "Sports Shorts", "Formal Shirt",
+        "Beanie Hat", "Canvas Shoes", "Leather Belt",
+    ],
+    "Home & Kitchen": [
+        "Water Bottle", "Thermos Flask", "Frying Pan", "Dinner Set",
+        "Storage Container", "Cutting Board", "Blender",
+        "Kettle", "Mop Set", "Towel Set",
+    ],
+}
+
+NUMBER_OF_BATCHES = int(os.getenv("NUMBER_OF_BATCHES"))
+
+# Scheduled run hours (UTC) — must match github/workflows/generate_data.yml cron
+BATCH_SCHEDULE_HOURS = [7, 15]
+
+def generate_batch_id() -> str:
+    """
+    Auto-generate batch ID: 2026_03_23_07_batch_01
+
+    Determines the batch number based on which scheduled hour slot
+    the current time falls closest to. Falls back to sequential
+    numbering if the hour doesn't match a known schedule.
+    """
+
+    now = datetime.now(timezone.utc)
+    date_part = now.strftime("%Y_%m_%d")
+    hour = now.hour
+
+    # Find the closest scheduled hour to determine batch number
+    batch_number = 1
+    for i, scheduled_hour in enumerate(BATCH_SCHEDULE_HOURS):
+        if abs(hour - scheduled_hour) <= 1:
+            batch_number = i + 1
+            break
+    else:
+        # Manual run outside scheduled hours — assign based on AM/PM
+        batch_number = 1 if hour < 12 else 2
+
+    return f"{date_part}_{hour:02d}_batch_{batch_number}"
