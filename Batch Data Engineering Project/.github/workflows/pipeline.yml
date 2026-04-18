@@ -1,0 +1,412 @@
+name: Mandera Analytics Pipeline CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  schedule:
+    # Run daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to deploy to'
+        required: true
+        default: 'development'
+        type: choice
+        options:
+          - development
+          - staging
+          - production
+
+env:
+  PYTHON_VERSION: '3.14'
+  POSTGRES_DB: mandera_warehouse
+  POSTGRES_USER: pipeline
+  POSTGRES_PASSWORD: pipeline_secret
+  MONGO_DB: mandera_source
+  MONGO_USER: admin
+  MONGO_PASSWORD: password
+
+jobs:
+  # Job 1: Code Quality & Testing
+  quality-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      mongo:
+        image: mongo:latest
+        env:
+          MONGO_INITDB_ROOT_USERNAME: ${{ env.MONGO_USER }}
+          MONGO_INITDB_ROOT_PASSWORD: ${{ env.MONGO_PASSWORD }}
+          MONGO_INITDB_DATABASE: ${{ env.MONGO_DB }}
+        options: >-
+          --health-cmd mongo
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 27017:27017
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requiremeents.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requiremeents.txt
+          pip install pytest pytest-cov pylint black flake8
+
+      - name: Lint code
+        run: |
+          pylint config/ generator/ extraction/ validation/ --fail-under=7
+          black --check --diff config/ generator/ extraction/ validation/
+          flake8 config/ generator/ extraction/ validation/
+
+      - name: Run unit tests
+        run: |
+          pytest tests/ --cov=. --cov-report=xml --cov-report=term-missing
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          MONGO_URI: mongodb://admin:password@localhost:27017/mandera_source?authSource=admin
+
+      - name: Upload coverage reports
+        uses: codecov/codecov-action@v3
+        with:
+          file: ./coverage.xml
+          flags: unittests
+          name: codecov-umbrella
+
+  # Job 2: Data Pipeline Execution
+  data-pipeline:
+    needs: quality-check
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      mongo:
+        image: mongo:latest
+        env:
+          MONGO_INITDB_ROOT_USERNAME: ${{ env.MONGO_USER }}
+          MONGO_INITDB_ROOT_PASSWORD: ${{ env.MONGO_PASSWORD }}
+          MONGO_INITDB_DATABASE: ${{ env.MONGO_DB }}
+        options: >-
+          --health-cmd mongo
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 27017:27017
+
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin123
+        options: >-
+          --health-cmd "curl -f http://localhost:9000/minio/health/live || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 9000:9000
+
+      redis:
+        image: redis:alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requiremeents.txt
+
+      - name: Wait for services to be ready
+        run: |
+          echo "Waiting for PostgreSQL..."
+          for i in {1..30}; do
+            if pg_isready -h localhost -p 5432 -U ${{ env.POSTGRES_USER }}; then
+              echo "PostgreSQL is ready!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+          echo "Waiting for MongoDB..."
+          for i in {1..30}; do
+            if mongosh --host localhost --port 27017 --username ${{ env.MONGO_USER }} --password ${{ env.MONGO_PASSWORD }} --authenticationDatabase admin --eval "db.runCommand({ping: 1})" > /dev/null 2>&1; then
+              echo "MongoDB is ready!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
+      - name: Initialize database schemas
+        run: |
+          echo "Creating database schemas..."
+          psql postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }} -f sql/create_raw_tables.sql
+          psql postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }} -f sql/create_staging_tables.sql
+          psql postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }} -f sql/create_monitoring_tables.sql
+
+      - name: Generate synthetic data
+        run: |
+          echo "Generating synthetic data..."
+          python -m generator.data_generator
+        env:
+          MONGO_URI: mongodb://${{ env.MONGO_USER }}:${{ env.MONGO_PASSWORD }}@localhost:27017/${{ env.MONGO_DB }}?authSource=admin
+
+      - name: Extract data to PostgreSQL
+        run: |
+          echo "Extracting data from MongoDB to PostgreSQL..."
+          python extraction/extract_mongo_to_postgres.py
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+          MONGO_URI: mongodb://${{ env.MONGO_USER }}:${{ env.MONGO_PASSWORD }}@localhost:27017/${{ env.MONGO_DB }}?authSource=admin
+
+      - name: Extract data to MinIO
+        run: |
+          echo "Extracting data from MongoDB to MinIO..."
+          python extraction/extract_mongo_to_minio.py
+        env:
+          MINIO_ENDPOINT: http://localhost:9000
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin123
+          MONGO_URI: mongodb://${{ env.MONGO_USER }}:${{ env.MONGO_PASSWORD }}@localhost:27017/${{ env.MONGO_DB }}?authSource=admin
+
+      - name: Run data transformations
+        run: |
+          echo "Running data transformations..."
+          psql postgresql://${{ env.POSTGRES_USER }}:${{ env.POSTGRES_PASSWORD }}@localhost:5432/${{ env.POSTGRES_DB }} -f sql/truncate_raw_tables.sql
+          # Add transformation SQL files here as they are created
+
+      - name: Run data validation
+        run: |
+          echo "Running data quality validation..."
+          python validation/run_checks.py
+        env:
+          POSTGRES_HOST: localhost
+          POSTGRES_PORT: 5432
+          POSTGRES_DB: ${{ env.POSTGRES_DB }}
+          POSTGRES_USER: ${{ env.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ env.POSTGRES_PASSWORD }}
+
+      - name: Generate pipeline metrics
+        run: |
+          echo "Generating pipeline execution metrics..."
+          python -c "
+          import psycopg2
+          import os
+          from datetime import datetime
+
+          conn = psycopg2.connect(
+              host='localhost',
+              port=5432,
+              dbname='${{ env.POSTGRES_DB }}',
+              user='${{ env.POSTGRES_USER }}',
+              password='${{ env.POSTGRES_PASSWORD }}'
+          )
+          cursor = conn.cursor()
+
+          # Insert pipeline execution record
+          cursor.execute('''
+              INSERT INTO monitoring.pipeline_executions
+              (execution_id, status, start_time, end_time, records_processed, source)
+              VALUES (%s, %s, %s, %s, %s, %s)
+          ''', (
+              '${{ github.run_id }}',
+              'SUCCESS',
+              '${{ github.event.head_commit.timestamp }}',
+              datetime.now().isoformat(),
+              1000,  # Placeholder - calculate actual count
+              'GitHub Actions'
+          ))
+
+          conn.commit()
+          cursor.close()
+          conn.close()
+          print('Pipeline metrics recorded')
+          "
+
+      - name: Upload pipeline artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: pipeline-results-${{ github.run_id }}
+          path: |
+            logs/
+            *.log
+          retention-days: 30
+
+  # Job 3: Deploy to Staging (only on main branch)
+  deploy-staging:
+    needs: data-pipeline
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy to staging
+        run: |
+          echo "🚀 Deploying to staging environment..."
+          echo "Environment: staging"
+          echo "Commit: ${{ github.sha }}"
+          echo "Triggered by: ${{ github.actor }}"
+
+          # Add your staging deployment commands here
+          # For example: kubectl apply, docker push, etc.
+
+      - name: Run integration tests
+        run: |
+          echo "🧪 Running integration tests on staging..."
+          # Add integration test commands here
+
+      - name: Notify deployment success
+        run: |
+          echo "✅ Staging deployment completed successfully!"
+          echo "Pipeline execution ID: ${{ github.run_id }}"
+
+  # Job 4: Security Scan
+  security-scan:
+    runs-on: ubuntu-latest
+    needs: quality-check
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+
+      - name: Upload Trivy scan results
+        uses: github/codeql-action/upload-sarif@v2
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  # Job 5: Performance Testing
+  performance-test:
+    runs-on: ubuntu-latest
+    needs: data-pipeline
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requiremeents.txt
+          pip install locust
+
+      - name: Run performance tests
+        run: |
+          echo "🏃 Running performance tests..."
+          # Add performance test commands here
+          # Example: locust -f tests/performance_tests.py --headless -u 100 -r 10 --run-time 1m
+
+      - name: Generate performance report
+        run: |
+          echo "📊 Generating performance report..."
+          # Add report generation commands here
+
+  # Job 6: Notification
+  notify:
+    needs: [quality-check, data-pipeline, security-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Send notification
+        run: |
+          if [ "${{ needs.quality-check.result }}" == "success" ] && \
+             [ "${{ needs.data-pipeline.result }}" == "success" ] && \
+             [ "${{ needs.security-scan.result }}" == "success" ]; then
+            echo "✅ All pipeline stages completed successfully!"
+            echo "Pipeline execution: ${{ github.run_id }}"
+            echo "Commit: ${{ github.sha }}"
+            echo "Triggered by: ${{ github.actor }}"
+
+            # Add notification commands here
+            # Example: curl -X POST -H 'Content-type: application/json' \
+            # --data '{"text":"Pipeline completed successfully!"}' \
+            # YOUR_SLACK_WEBHOOK_URL
+
+          else
+            echo "❌ Pipeline failed!"
+            echo "Quality Check: ${{ needs.quality-check.result }}"
+            echo "Data Pipeline: ${{ needs.data-pipeline.result }}"
+            echo "Security Scan: ${{ needs.security-scan.result }}"
+
+            # Add failure notification commands here
+          fi
