@@ -1,0 +1,7 @@
+pandas
+pymongo
+psycopg2-binary
+apache-airflow
+minio
+faker
+python-dotenv
