@@ -1,0 +1,51 @@
+==================== 2026-05-07T12:18:11.113129Z | 019e025f-c412-7a91-b0a5-1afd1e0c5b8f ====================
+12:18:11.117172 [info ]: Installing dbt project and profile setup
+12:18:11.130364 [info ]: Info Created .vscode/extensions.json with dbt extension recommendation
+12:18:11.132474 [info ]: Success Project created successfully!
+12:18:11.132563 [info ]: Info Project name: jaffle_shop
+12:18:11.132616 [info ]: Info Project directory: jaffle_shop
+12:18:11.132666 [info ]: Info Setting up your profile...
+12:18:11.135543 [info ]: Info Creating new profile...
+12:19:44.600607 [info ]: No dbt_cloud.yml found - proceeding without cloud pre-population
+==================== 2026-05-07T12:23:48.662838Z | 019e0264-eab5-7c11-9cef-734626f64521 ====================
+12:23:48.662957 [info ]: Installing dbt project and profile setup
+12:23:48.663145 [info ]: Warning Directory 'jaffle_shop' already exists, using 'jaffle_shop_1' instead
+12:23:48.670507 [info ]: Info Created .vscode/extensions.json with dbt extension recommendation
+12:23:48.670588 [info ]: Success Project created successfully!
+12:23:48.670617 [info ]: Info Project name: jaffle_shop_1
+12:23:48.670640 [info ]: Info Project directory: jaffle_shop_1
+12:23:48.670662 [info ]: Info Setting up your profile...
+12:23:48.670760 [info ]: Info Creating new profile...
+12:25:04.726946 [info ]: No dbt_cloud.yml found - proceeding without cloud pre-population
+12:28:33.908349 [info ]: Success Profile written to /Users/mac1/.dbt/profiles.yml
+12:28:33.910298 [info ]: Validating profile inputs, adapters, and connection
+
+12:28:33.910746 [info ]: dbt-fusion 2.0.0-preview.173
+12:28:33.918969 [info ]: Started loading project
+12:28:33.964737 [info ]: Loading ~/.dbt/profiles.yml
+12:28:33.979473 [info ]: Finished loading project [  0.06s]
+12:28:33.982708 [info ]: Started debugging
+12:28:33.982842 [info ]: Debugging profile: dev
+12:28:33.982879 [info ]: Debugging dbt version: 2.0.0-preview.173
+12:28:33.983029 [info ]: Debugging platform: macos x86_64 (unix)
+12:28:33.983661 [info ]: Debugging adapter type: postgres (remote)
+12:28:34.008276 [info ]: Debugging dependencies:
+  git: OK
+12:28:34.011725 [info ]: Debugging connection:
+  "port": 5432,
+  "database": "mandera_db",
+  "schema": "public",
+  "host": "Host: localhost",
+  "user": "Port: 5432"
+12:28:34.023781 [info ]: Finished debugging [  0.04s]
+12:28:34.026606 [error]: dbt1011: dbt was unable to connect to the specified database.
+The following error was returned:
+
+invalid port number
+
+Check your database credentials and try again. For more information, visit:
+https://docs.getdbt.com/docs/core/connect-data-platform/connection-profiles
+12:28:36.064017 [info ]: New version available 2.0.0-preview.175 (run `dbt system update`)
+12:28:36.504129 [info ]: 
+==================== Execution Summary =====================
+Finished 'init' with 1 error for target 'dev' [4m 48s]
